@@ -6,6 +6,10 @@ A containerised **mitmproxy** deployment that acts as a transparent inbound/outb
 
 Wanted a simple proxy to wrap around fully autonomous AI agents to have more control and visibility over its network comms.
 
+### Sample Use Cases
+
+- COMING SOON! Using this in my config for a personal deployment of OpenClaw (alongside other hardening), will publish soon.
+
 ## Architecture
 
 ```
