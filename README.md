@@ -2,9 +2,11 @@
 
 A containerised **mitmproxy** deployment that acts as a transparent inbound/outbound proxy for a co-located Docker container. The target app has **zero direct network access**; every byte flows through the proxy. Proxy + killswitch enforced via iptables rules.
 
+Requests are also checked for configured secret placeholders and swaps them in with real secrets for allowed destinations.
+
 ## Motivation
 
-Wanted a simple proxy to wrap around fully autonomous AI agents to have more control and visibility over its network comms.
+Wanted a simple proxy to wrap around fully autonomous AI agents to have more control and visibility over its network comms and remove secrets from its environment.
 
 ### Sample Use Cases
 
