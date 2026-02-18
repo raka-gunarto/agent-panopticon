@@ -1,0 +1,9 @@
+# Outbound domain allowlist
+# Supports exact (example.com) and wildcard (*.example.com) patterns
+
+api.openai.com
+*.openai.com
+api.anthropic.com
+*.anthropic.com
+
+pypi.org

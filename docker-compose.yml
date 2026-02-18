@@ -1,0 +1,83 @@
+services:
+  proxy:
+    build: ./proxy
+    container_name: panopticon-proxy
+    cap_add: [NET_ADMIN]
+    ports:
+      - "${INBOUND_HTTPS_PORT:-443}:${INBOUND_HTTPS_PORT:-443}"
+      - "${INBOUND_WSS_PORT:-12000}:${INBOUND_WSS_PORT:-12000}"
+      - "127.0.0.1:${DASHBOARD_PORT:-8081}:${DASHBOARD_PORT:-8081}"
+    volumes:
+      - mitmproxy-certs:/home/mitmuser/.mitmproxy
+      - ./allowlist.txt:/etc/proxy/config/allowlist.txt:ro
+    networks: [external]
+    read_only: true
+    tmpfs:
+      - /tmp:noexec,nosuid,size=64m
+    healthcheck:
+      test: ["CMD-SHELL", "grep -q mitmweb /proc/1/cmdline"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+
+  # Replace with your real application. Key constraints:
+  #   - network_mode: "service:proxy" shares the proxy's network namespace
+  #   - App must run unprivileged to prevent escape from the shared network namespace
+  #   - App must listen on APP_HTTP_PORT (default 8443) and APP_WS_PORT (default 12001)
+  #   - App must trust the mitmproxy CA for outbound TLS
+  #   - App must run after proxy starts to ensure iptables rules are in place
+  app:
+    image: python:3.12-slim
+    container_name: panopticon-app
+    network_mode: "service:proxy"
+    depends_on:
+      proxy: { condition: service_healthy }
+    user: "65534:65534"
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    read_only: true
+    tmpfs:
+      - /tmp:noexec,nosuid,size=64m
+    volumes:
+      - mitmproxy-certs:/mitmproxy-certs:ro
+    environment:
+      REQUESTS_CA_BUNDLE: /mitmproxy-certs/mitmproxy-ca-cert.pem
+      SSL_CERT_FILE: /mitmproxy-certs/mitmproxy-ca-cert.pem
+      NODE_EXTRA_CA_CERTS: /mitmproxy-certs/mitmproxy-ca-cert.pem
+    command:
+      - /bin/sh
+      - -c
+      - |
+        set -e
+        if [ ! -f /mitmproxy-certs/mitmproxy-ca-cert.pem ]; then echo "[app] CA cert not found — exiting"; exit 1; fi
+        echo "[app] CA cert found — starting sample app"
+        python3 -c "
+        import http.server, threading, json, signal
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({'status': 'ok'}).encode())
+            def log_message(self, fmt, *args):
+                print(f'[app] {fmt % args}')
+
+        for port in [8443, 12001]:
+            s = http.server.HTTPServer(('0.0.0.0', port), Handler)
+            threading.Thread(target=s.serve_forever, daemon=True).start()
+            print(f'[app] listening on :{port}')
+
+        signal.pause()
+        "
+    restart: unless-stopped
+
+volumes:
+  mitmproxy-certs:
+
+networks:
+  external:
+    driver: bridge
+    enable_ipv6: false
