@@ -53,6 +53,7 @@ Open **http://127.0.0.1:8081** to view the mitmweb dashboard.
 - [ ] Inbound traffic filtering
     - [ ] Inbound IP allowlist (either through mitmproxy or iptables rules)
     - [ ] Simple filtering of jailbreak patterns
+    - [ ] Best effort detection of auth secrets and replace on the fly?
 - [ ] Notify of blocks via webhook
 - [ ] Editable egress allowlist
 - [ ] Certificate pinning?
