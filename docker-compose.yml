@@ -3,6 +3,7 @@ services:
     build: ./proxy
     container_name: panopticon-proxy
     cap_add: [NET_ADMIN]
+    env_file: .env
     ports:
       - "${INBOUND_HTTPS_PORT:-443}:${INBOUND_HTTPS_PORT:-443}"
       - "${INBOUND_WSS_PORT:-12000}:${INBOUND_WSS_PORT:-12000}"
