@@ -5,6 +5,7 @@ Features:
   - Outbound domain allowlist enforcement
   - Rejection of direct-IP destinations on egress
   - Secret placeholder replacement in outbound request headers and bodies
+  - Best-effort inbound secret detection and redaction
   - DNS query filtering and logging (blocks non-allowlisted domains)
 
 Environment variables:
@@ -17,6 +18,8 @@ from __future__ import annotations
 
 import ipaddress
 import os
+import secrets as strong_prng
+import string
 from datetime import datetime, timezone
 from typing import Any
 
@@ -24,6 +27,48 @@ from mitmproxy import ctx, dns, http
 from mitmproxy.flow import Flow
 
 LOG_FORMAT = "[{timestamp}] [{direction}] [{client}] {method} {url} → {status}"
+
+# Header names (lowercase) commonly used to carry secrets / tokens / keys.
+_SECRET_HEADER_NAMES: frozenset[str] = frozenset({
+    "authorization",
+    "proxy-authorization",
+    "x-api-key",
+    "api-key",
+    "apikey",
+    "x-auth-token",
+    "x-access-token",
+    "x-secret-key",
+    "x-token",
+    "x-session-token",
+    "x-api-secret",
+    "x-webhook-secret",
+    "x-signing-secret",
+})
+
+
+def _extract_apex_domain(host: str) -> str:
+    """Apex domain extraction (last two domain labels)."""
+    host = host.lower().rstrip(".").split(":")[0]  # strip port & trailing dot
+    parts = host.split(".")
+    if len(parts) >= 2:
+        return ".".join(parts[-2:])
+    return host
+
+
+def _strip_auth_prefix(value: str) -> tuple[str, str]:
+    """Separate an auth-scheme prefix (e.g. 'Bearer ') from the token."""
+    for prefix in ("Bearer ", "Basic ", "Token ", "token "):
+        if value.startswith(prefix):
+            return prefix, value[len(prefix):]
+    return "", value
+
+def _generate_placeholder() -> str:
+    """Generate a random placeholder token string."""
+    rand = "".join(
+        strong_prng.choice(string.ascii_uppercase + string.digits)
+        for _ in range(32)
+    )
+    return f"PANOPTICON_CAPTURED_{rand}"
 
 
 def _domain_matches(host: str, patterns: set[str]) -> bool:
@@ -96,6 +141,9 @@ class Panopticon:
     def __init__(self) -> None:
         self.allowlist: set[str] = set()
         self.secrets: list[_SecretEntry] = []
+        # Dynamically captured inbound secrets
+        self._captured_secrets: list[_SecretEntry] = []
+        self._captured_value_map: dict[str, _SecretEntry] = {}  # token → entry
 
     def load(self, loader: Any) -> None:
         allowlist_path = os.environ.get("ALLOWLIST_FILE", "/etc/proxy/config/allowlist.txt")
@@ -173,10 +221,15 @@ class Panopticon:
             ctx.log.warn(f"BLOCKED (allowlist): {flow.request.method} {flow.request.pretty_url}")
 
     def request(self, flow: http.HTTPFlow) -> None:
-        self._log_http(flow, phase="request")
-        if not self._is_outbound(flow) or flow.response:
-            return
-        self._inject_secrets(flow, flow.request.pretty_host.lower())
+        if self._is_outbound(flow):
+            self._log_http(flow, phase="request")
+            if not flow.response:
+                self._inject_secrets(flow, flow.request.pretty_host.lower())
+        else:
+            # Inbound: capture secrets *before* logging so the log shows
+            # redacted values rather than real secrets.
+            self._capture_inbound_secrets(flow)
+            self._log_http(flow, phase="request")
 
     def response(self, flow: http.HTTPFlow) -> None:
         self._log_http(flow, phase="response")
@@ -187,6 +240,56 @@ class Panopticon:
             f"[{direction}] ERROR {flow.request.method} {flow.request.pretty_url}: "
             f"{flow.error.msg if flow.error else 'unknown'}"
         )
+
+    # Inbound secret capture
+
+    def _capture_inbound_secrets(self, flow: http.HTTPFlow) -> None:
+        """Detect and redact secrets in inbound request headers (best effort).
+
+        Detected secrets are replaced with random placeholders and registered
+        in ``self.secrets`` so that the normal outbound injection path can
+        substitute them back — but only when the outbound destination matches
+        the apex domain of the original inbound request's Host header.
+        """
+        host = flow.request.pretty_host.lower()
+        apex = _extract_apex_domain(host)
+
+        for hdr_name in list(flow.request.headers.keys()):
+            if hdr_name.lower() not in _SECRET_HEADER_NAMES:
+                continue
+
+            hdr_value = flow.request.headers[hdr_name]
+
+            # Separate any auth-scheme prefix so we only replace the token
+            prefix, token = _strip_auth_prefix(hdr_value)
+
+            # Deduplicate: reuse existing placeholder for an identical token
+            if token in self._captured_value_map:
+                existing = self._captured_value_map[token]
+                flow.request.headers[hdr_name] = prefix + existing.placeholder
+                ctx.log.info(
+                    f"Replaced known secret in header '{hdr_name}' "
+                    f"with existing placeholder"
+                )
+                continue
+
+            # Generate new placeholder and register as a secret entry
+            placeholder = _generate_placeholder()
+            name = f"captured_{len(self._captured_secrets)}"
+            entry = _SecretEntry(name, token, {f"*.{apex}"})
+            entry.placeholder = placeholder  # override default placeholder
+
+            self.secrets.append(entry)
+            self._captured_secrets.append(entry)
+            self._captured_value_map[token] = entry
+
+            flow.request.headers[hdr_name] = prefix + placeholder
+
+            masked = token[:4] + "***" if len(token) > 4 else "***"
+            ctx.log.info(
+                f"Captured secret from header '{hdr_name}' ({masked}), "
+                f"locked to '*.{apex}' → {placeholder}"
+            )
 
     # Secret injection
 
