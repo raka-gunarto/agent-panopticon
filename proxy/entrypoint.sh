@@ -15,6 +15,29 @@ APP_HTTP_PORT=${APP_HTTP_PORT:-8443}
 APP_WS_PORT=${APP_WS_PORT:-12001}
 DASHBOARD_PORT=${DASHBOARD_PORT:-8081}
 
+# --- Port clash detection ---
+check_no_clashes() {
+  local seen=""
+  for port in "$@"; do
+    for s in $seen; do
+      if [ "$port" = "$s" ]; then
+        echo "[panopticon] ERROR: port clash — port $port is assigned to more than one role" >&2
+        exit 1
+      fi
+    done
+    seen="$seen $port"
+  done
+}
+
+check_no_clashes \
+  "${TRANSPARENT_PORT}" \
+  "${DNS_PORT}" \
+  "${INBOUND_HTTPS_PORT}" \
+  "${INBOUND_WSS_PORT}" \
+  "${APP_HTTP_PORT}" \
+  "${APP_WS_PORT}" \
+  "${DASHBOARD_PORT}"
+
 echo "[panopticon] configuring iptables …"
 
 # --- NAT: redirect app traffic to mitmproxy ---
@@ -30,6 +53,8 @@ iptables -t nat -A OUTPUT -m owner --uid-owner ${PROXY_UID} -j RETURN
 iptables -t nat -A OUTPUT -p tcp --dport 443 -j REDIRECT --to-ports ${TRANSPARENT_PORT}
 
 # --- OUTPUT: restrict app egress ---
+# Block non-proxy processes from connecting to the dashboard on loopback
+iptables -I OUTPUT 1 -o lo -p tcp --dport ${DASHBOARD_PORT} -m owner ! --uid-owner ${PROXY_UID} -j REJECT
 iptables -A OUTPUT -o lo -j ACCEPT
 iptables -A OUTPUT -d 127.0.0.0/8 -j ACCEPT
 iptables -A OUTPUT -m owner --uid-owner ${PROXY_UID} -j ACCEPT
@@ -68,6 +93,6 @@ MITM_CMD="mitmweb \
   -s /etc/proxy/addons/panopticon.py"
 
 echo "[panopticon] starting mitmweb (uid ${PROXY_UID})"
-echo "[panopticon] dashboard → http://127.0.0.1:${DASHBOARD_PORT}/"
+echo "[panopticon] dashboard → http://<container-ip>:${DASHBOARD_PORT}/ (loopback blocked)"
 
 exec gosu mitmuser ${MITM_CMD}
