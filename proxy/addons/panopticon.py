@@ -181,6 +181,15 @@ class Panopticon:
     def response(self, flow: http.HTTPFlow) -> None:
         self._log_http(flow, phase="response")
 
+    def websocket_message(self, flow: http.HTTPFlow) -> None:
+        """Inject secrets into outbound websocket messages."""
+        if not self._is_outbound(flow) or flow.websocket is None:
+            return
+        msg = flow.websocket.messages[-1]
+        if not msg.from_client:
+            return
+        self._inject_secrets_ws(flow, flow.request.pretty_host.lower(), msg)
+
     def error(self, flow: http.HTTPFlow) -> None:
         direction = self._direction_label(flow)
         ctx.log.error(
@@ -218,6 +227,33 @@ class Panopticon:
             if in_body and flow.request.content is not None:
                 flow.request.content = flow.request.content.replace(ph.encode(), entry.value.encode())
                 ctx.log.info(f"Injected secret [{entry.name}] into body")
+
+    # WebSocket secret injection
+
+    def _inject_secrets_ws(self, flow: http.HTTPFlow, host: str, msg: Any) -> None:
+        content = msg.content
+        if isinstance(content, str):
+            content_bytes = content.encode()
+        else:
+            content_bytes = content
+
+        for entry in self.secrets:
+            ph = entry.placeholder
+            if ph.encode() not in content_bytes:
+                continue
+
+            if entry.allowed_domains and not _domain_matches(host, entry.allowed_domains):
+                msg.drop()
+                ctx.log.warn(f"BLOCKED (ws secret domain): {entry.name} → {host}")
+                return
+
+            content_bytes = content_bytes.replace(ph.encode(), entry.value.encode())
+            ctx.log.info(f"Injected secret [{entry.name}] into websocket message")
+
+        if isinstance(msg.content, str):
+            msg.content = content_bytes.decode()
+        else:
+            msg.content = content_bytes
 
     # DNS hooks
 
