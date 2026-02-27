@@ -273,7 +273,7 @@ class Panopticon:
                     flow.request.recursion_desired,
                     False,                    # recursion_available
                     0,                        # reserved
-                    5,                        # response_code (REFUSED)
+                    3,                        # response_code (NXDOMAIN)
                     list(flow.request.questions),
                     [],                       # answers
                     [],                       # authorities
