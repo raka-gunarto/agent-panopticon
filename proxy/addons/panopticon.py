@@ -157,6 +157,14 @@ class Panopticon:
 
         host = flow.request.pretty_host.lower()
 
+        if flow.request.port == 443 and flow.request.scheme == "http":
+            flow.response = http.Response.make(
+                403, b"PANOPTICON: plain HTTP on port 443 is not allowed; use HTTPS.\n",
+                {"Content-Type": "text/plain"},
+            )
+            ctx.log.warn(f"BLOCKED (HTTP on 443): {flow.request.method} {flow.request.pretty_url}")
+            return
+
         if _is_ip(host):
             flow.response = http.Response.make(
                 403, b"PANOPTICON: direct IP destinations are not allowed.\n",
